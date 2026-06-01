@@ -1,0 +1,28 @@
+﻿# Jupyter checkpoints
+.ipynb_checkpoints/
+
+# Data files
+*.csv
+*.zip
+WORKS/student+performance/
+
+# PDFs
+*.pdf
+
+# Reference repo
+Logistic-Reduced-Rank-Regression-main/
+
+# Scratch/noise files
+# Logistic Reduced-Rank Regression.txt
+WORKS/test_import.py
+13. Image-Preprocessing.ipynb
+
+# Python
+__pycache__/
+*.py[cod]
+.env
+venv/
+
+# OS
+.DS_Store
+Thumbs.db

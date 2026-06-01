@@ -1,0 +1,181 @@
+# Logistic Reduced-Rank Regression (MM algorithm)
+# Step-by-step Python prototype with explanations and shapes.
+# Author: (you) — use for learning / debugging
+# Requires: numpy, scipy
+
+import numpy as np
+from numpy.linalg import svd, eigh
+from scipy.special import expit as sigmoid   # logistic sigmoid
+
+# ---------------------------
+# Helper functions
+# ---------------------------
+
+def inv_sqrt_matrix(A):
+    """Return (A)^(-1/2) using eigen-decomposition (A must be symmetric positive definite).
+    A: (P x P) ndarray
+    """
+    vals, vecs = eigh(A)
+    # numerical safety: clamp tiny eigenvalues
+    vals_clamped = np.clip(vals, 1e-12, None)
+    D_inv_sqrt = np.diag(1.0 / np.sqrt(vals_clamped))
+    return vecs @ D_inv_sqrt @ vecs.T
+
+def deviance(Y, Pi):
+    """Compute deviance = -2 * log-likelihood (binary)."""
+    eps = 1e-12
+    return -2.0 * np.sum(Y * np.log(Pi + eps) + (1 - Y) * np.log(1 - Pi + eps))
+
+# ---------------------------
+# MM iteration (single)
+# ---------------------------
+
+def mm_iteration_verbose(X, Y, B, V, m):
+    """
+    Perform a single MM iteration with verbose printing of matrices.
+    Shapes:
+      X: (N x P)
+      Y: (N x R) entries 0/1
+      B: (P x S)
+      V: (R x S)
+      m: (R,) vector (intercepts)
+    Returns updated (B_new, V_new, m_new, Pi_new)
+    """
+    N, P = X.shape
+    _, R = Y.shape
+    S = B.shape[1]
+
+    print("\n--- MM iteration start ---")
+    print(f"Shapes: X {X.shape}, Y {Y.shape}, B {B.shape}, V {V.shape}, m {m.shape}")
+
+    # 1) linear predictor: Eta = 1_N m^T + X B V^T  (N x R)
+    Eta = np.outer(np.ones(N), m) + X @ B @ V.T
+    print("\nEta (N x R) = 1 m^T + X B V^T:\n", Eta)
+
+    # 2) probabilities Pi = sigmoid(Eta)
+    Pi = sigmoid(Eta)
+    print("\nPi = sigmoid(Eta):\n", Pi)
+    print("Deviance (current):", deviance(Y, Pi))
+
+    # 3) working response Z = Eta + 4 * (Y - Pi)  (N x R)
+    Z = Eta + 4.0 * (Y - Pi)
+    print("\nZ (working response) = Eta + 4*(Y - Pi):\n", Z)
+
+    # 4) update intercepts m_new = (1/N) * (Z - X B V^T)^T 1_N  -> shape (R,)
+    # Equivalent: column means of (Z - X B V^T)
+    residual = Z - X @ B @ V.T  # (N x R)
+    m_new = np.mean(residual, axis=0)  # (R,)
+    print("\nResidual (Z - X B V^T) (N x R):\n", residual)
+    print("\nUpdated intercepts m_new (R,):\n", m_new)
+
+    # 5) center Z: A = Z - 1_N m_new^T  (N x R)
+    A = Z - np.outer(np.ones(N), m_new)
+    print("\nA = Z - 1 m_new^T  (centered working response) (N x R):\n", A)
+    # Now each column of A has mean approx 0 by construction.
+
+    # 6) form M = (X^T X)^(-1/2) X^T A  --> shape (P x R)
+    XtX = X.T @ X   # (P x P)
+    XtX_inv_sqrt = inv_sqrt_matrix(XtX)   # (P x P)
+    M = XtX_inv_sqrt @ X.T @ A   # (P x R)
+    print("\n(X^T X)^{-1/2} shape:", XtX_inv_sqrt.shape)
+    print("\nM = (X^T X)^{-1/2} X^T A  (P x R):\n", M)
+
+    # 7) SVD of M: M = P_mat Sigma Q^T
+    U_mat, s_vals, Vt_mat = svd(M, full_matrices=False)
+    # U_mat: (P x min(P,R)), s_vals: (min(P,R),), Vt_mat: (min(P,R) x R)
+    print("\nSVD results:")
+    print("U_mat (P x k):\n", U_mat)
+    print("s_vals (k,):\n", s_vals)
+    print("Vt_mat (k x R):\n", Vt_mat)
+
+    # Keep top-S components (S <= min(P,R))
+    U_S = U_mat[:, :S]             # (P x S)
+    Sigma_S = np.diag(s_vals[:S])  # (S x S)
+    V_S = Vt_mat[:S, :].T          # (R x S)
+
+    # 8) update B and V. Use the R-code's style of scaling (see discussion).
+    # R-code uses B = iRx %*% U_S * sqrt(N), V = V_S * Sigma_S / sqrt(N)
+    # where iRx corresponds to (X^T X)^{-1/2}
+    B_new = XtX_inv_sqrt @ U_S * np.sqrt(N)   # (P x S)
+    V_new = V_S @ Sigma_S / np.sqrt(N)        # (R x S)
+
+    print("\nUpdated B_new (P x S):\n", B_new)
+    print("\nUpdated V_new (R x S):\n", V_new)
+
+    # 9) new linear predictor and probabilities (for monitoring)
+    Eta_new = np.outer(np.ones(N), m_new) + X @ B_new @ V_new.T
+    Pi_new = sigmoid(Eta_new)
+    print("\nEta_new (N x R):\n", Eta_new)
+    print("\nPi_new (N x R):\n", Pi_new)
+    print("Deviance (new):", deviance(Y, Pi_new))
+
+    print("--- MM iteration end ---\n")
+    return B_new, V_new, m_new, Pi_new
+
+# ---------------------------
+# Full fit routine (iterative)
+# ---------------------------
+
+def fit_mm_logistic_rrr_verbose(X, Y, S=1, max_iter=100, tol=1e-6):
+    """
+    Full MM optimization loop with verbose printing at each iteration.
+    """
+    N, P = X.shape
+    R = Y.shape[1]
+    # Initialize
+    np.random.seed(0)
+    B = np.random.normal(0, 0.1, (P, S))
+    V = np.random.normal(0, 0.1, (R, S))
+    m = np.zeros(R)
+
+    dev_old = np.inf
+    for it in range(1, max_iter+1):
+        print(f"\n======== Iteration {it} ========")
+        B, V, m, Pi = mm_iteration_verbose(X, Y, B, V, m)
+        dev_new = deviance(Y, Pi)
+        # check relative change in deviance
+        if dev_old != np.inf:
+            rel_change = abs(dev_old - dev_new) / (abs(dev_old) + 1e-12)
+            print(f"Relative deviance change: {rel_change:.8f}")
+            if rel_change < tol:
+                print("Converged by deviance criterion.")
+                break
+        dev_old = dev_new
+
+    return {'B': B, 'V': V, 'm': m, 'Pi': Pi, 'iter': it, 'deviance': dev_new}
+
+# ---------------------------
+# Toy example (S=2) from earlier message
+# ---------------------------
+
+if __name__ == "__main__":
+    # Toy X (4 x 2)
+    X = np.array([
+        [1.0, 2.0],
+        [2.0, 0.0],
+        [0.0, 1.0],
+        [1.0, 1.0]
+    ])
+    # Toy Y (4 x 3)
+    Y = np.array([
+        [1, 0, 0],
+        [1, 1, 0],
+        [0, 0, 0],
+        [0, 1, 0]
+    ], dtype=float)
+
+    # Choose S = 2 latent factors
+    S = 2
+
+    # Run a single verbose iteration first:
+    print("Run a single MM iteration (verbose):")
+    np.random.seed(0)
+    B0 = np.array([[0.5, 0.1],[0.2, -0.3]])   # initial B as in worked example
+    V0 = np.array([[1.0, 0.0],[0.5, 1.0],[-1.0, 0.2]])  # initial V
+    m0 = np.zeros(3)
+
+    B1, V1, m1, Pi1 = mm_iteration_verbose(X, Y, B0, V0, m0)
+
+    # If you want to run the full loop (watch many printouts), uncomment:
+    # out = fit_mm_logistic_rrr_verbose(X, Y, S=2, max_iter=30, tol=1e-8)
+    # print("Final results:", out)
